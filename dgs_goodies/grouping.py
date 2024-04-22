@@ -142,18 +142,22 @@ def clean_data__inplace(
         mtx: np.array,
         ordered_col_metadata: list,
         num_exclude_threshold: int = 0,
-    ) -> np.array:
+    ) -> Tuple[np.array, list[str]]:
     trans = mtx.transpose()
     passed_threshold_state = []
+    passed_threshold_col_names = []
     for col, (col_name, col_type, cleaner) in zip(trans, ordered_col_metadata):
         try:
             _, num_nones = cleaner(col)
-            passed_threshold_state.append(num_nones >= num_exclude_threshold)
+            passed = num_nones >= num_exclude_threshold
+            passed_threshold_state.append(passed)
+            if passed:
+                passed_threshold_state.append(col_name)
         except Exception as e:
             print(f"There was an error processing column '{col_name}' of type '{col_type}'")
             raise e
     passed_threshold = trans[passed_threshold_state]
-    return passed_threshold.transpose()
+    return passed_threshold.transpose(), passed_threshold_state
 
 
 ######################## ENTRYPOINT ########################
@@ -196,10 +200,10 @@ def generate_cleaned_mtx(codebook_filepath: str, training_data_filepath: str, cl
         for col_name in ordered_cols
     ]
     print("cleaning data")
-    cleaned_data = clean_data__inplace(training_data_np, ordered_col_metadata)
+    cleaned_data, col_names = clean_data__inplace(training_data_np, ordered_col_metadata)
     print("done")
 
-    trained_df = pd.DataFrame(cleaned_data, columns=ordered_cols)
+    trained_df = pd.DataFrame(cleaned_data, columns=col_names)
     
     print(f"writing cleaned data to '{cleaned_data_filepath}'")
     trained_df.to_csv(cleaned_data_filepath, index=False)
