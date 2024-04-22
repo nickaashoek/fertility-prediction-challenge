@@ -3,6 +3,7 @@ from functools import reduce
 import numpy as np
 import pandas as pd
 import sys
+from typing import Tuple
 
 
 ######################## GLOBALS ########################
@@ -32,7 +33,7 @@ def _convert(col: np.array, convert_fn) -> np.array:
     return are_nones, not_nones, not_none_values
 
 
-def _clean_continuous__inplace(col: np.array, convert_fn) -> np.array:
+def _clean_continuous__inplace(col: np.array, convert_fn) -> Tuple[np.array, int]:
     '''
     Helper that takes in an np array (generally raw strings from the CSV) and
     cleans it by drawing values for empty/problematic cells from a normal distribution
@@ -46,7 +47,7 @@ def _clean_continuous__inplace(col: np.array, convert_fn) -> np.array:
         mu, sigma = not_none_values.mean(), not_none_values.std()
     col[are_nones] = np.random.normal(mu, sigma, size=are_nones.sum())
     col[not_nones] = not_none_values
-    return col
+    return col, are_nones.sum()
 
 
 ######################## CATEGORICAL ########################
@@ -58,7 +59,7 @@ def _convert_int_or_null(val: str) -> int | None:
         return None
 
 
-def clean_categorical__inplace(col: np.array) -> np.array:
+def clean_categorical__inplace(col: np.array) -> Tuple[np.array, int]:
     are_nones, not_nones, not_none_values = _convert(col, _convert_int_or_null)
 
     total = not_nones.sum()
@@ -72,7 +73,7 @@ def clean_categorical__inplace(col: np.array) -> np.array:
 
     col[are_nones] = np.random.choice(uniques, p=percentages)
     col[not_nones] = not_none_values
-    return col
+    return col, not_nones.sum()
 
 
 ######################## NUMERIC ########################
@@ -83,7 +84,7 @@ def _convert_float_or_null(val: str) -> float | None:
     except Exception:
         return None
 
-def clean_numerical__inplace(col: np.array) -> np.array:
+def clean_numerical__inplace(col: np.array) -> Tuple[np.array, int]:
     _clean_continuous__inplace(col, _convert_float_or_null)
 
 
@@ -113,7 +114,7 @@ def _convert_to_datetimems_or_none(val: str) -> float | None:
 
     return None
 
-def clean_datetime__inplace(col: np.array) -> np.array:
+def clean_datetime__inplace(col: np.array) -> Tuple[np.array, int]:
     _clean_continuous__inplace(col, _convert_to_datetimems_or_none)
 
 
@@ -123,29 +124,36 @@ def _convert_to_str_or_none(val: str) -> str | None:
     return None if (val in NULL_STRINGS or val is None) else val
 
 
-def clean_character__inplace(col: np.array) -> np.array:
+def clean_character__inplace(col: np.array) -> Tuple[np.array, int]:
     are_nones, _, _ = _convert(col, _convert_to_str_or_none)
     col[are_nones] = np.repeat([""], are_nones.sum())
-    return col
+    return col, are_nones.sum()
 
 
 ######################## RESPONSE TO OPEN QUESTION ########################
 
-def clean_response_to_open_ended__inplace(col: np.array) -> np.array:
+def clean_response_to_open_ended__inplace(col: np.array) -> Tuple[np.array, int]:
     return clean_character__inplace(col)
 
 
 ######################## CLEANER ########################
 
-def clean_data__inplace(mtx: np.array, ordered_col_metadata: list) -> np.array:
+def clean_data__inplace(
+        mtx: np.array,
+        ordered_col_metadata: list,
+        num_exclude_threshold: int = 0,
+    ) -> np.array:
     trans = mtx.transpose()
+    passed_threshold_state = []
     for col, (col_name, col_type, cleaner) in zip(trans, ordered_col_metadata):
         try:
-            cleaner(col)
+            _, num_nones = cleaner(col)
+            passed_threshold_state.append(num_nones >= num_exclude_threshold)
         except Exception as e:
             print(f"There was an error processing column '{col_name}' of type '{col_type}'")
             raise e
-    return trans.transpose()
+    passed_threshold = trans[passed_threshold_state]
+    return passed_threshold.transpose()
 
 
 ######################## ENTRYPOINT ########################
@@ -201,5 +209,5 @@ def generate_cleaned_mtx(codebook_filepath: str, training_data_filepath: str, cl
 
 if __name__ == "__main__":
     # ideally create a CLI for this, can't be bothered to atm
-    codebook_filepath, training_data_filepath, cleaned_data_filepath = sys.argv[1:]
-    generate_cleaned_mtx(codebook_filepath, training_data_filepath, cleaned_data_filepath)
+    codebook_filepath, training_data_filepath, cleaned_data_filepath, threshold_str = sys.argv[1:]
+    generate_cleaned_mtx(codebook_filepath, training_data_filepath, cleaned_data_filepath, int(threshold_str))
