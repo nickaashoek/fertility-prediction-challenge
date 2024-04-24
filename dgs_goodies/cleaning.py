@@ -3,7 +3,6 @@ from functools import reduce
 import numpy as np
 import pandas as pd
 import sys
-from typing import Tuple
 
 
 ######################## GLOBALS ########################
@@ -33,7 +32,7 @@ def _convert(col: np.array, convert_fn) -> np.array:
     return are_nones, not_nones, not_none_values
 
 
-def _clean_continuous__inplace(col: np.array, convert_fn) -> Tuple[np.array, int]:
+def _clean_continuous__inplace(col: np.array, convert_fn) -> tuple[np.array, int]:
     '''
     Helper that takes in an np array (generally raw strings from the CSV) and
     cleans it by drawing values for empty/problematic cells from a normal distribution
@@ -59,7 +58,7 @@ def _convert_int_or_null(val: str) -> int | None:
         return None
 
 
-def clean_categorical__inplace(col: np.array) -> Tuple[np.array, int]:
+def clean_categorical__inplace(col: np.array) -> tuple[np.array, int]:
     are_nones, not_nones, not_none_values = _convert(col, _convert_int_or_null)
 
     total = not_nones.sum()
@@ -84,7 +83,7 @@ def _convert_float_or_null(val: str) -> float | None:
     except Exception:
         return None
 
-def clean_numerical__inplace(col: np.array) -> Tuple[np.array, int]:
+def clean_numerical__inplace(col: np.array) -> tuple[np.array, int]:
     _clean_continuous__inplace(col, _convert_float_or_null)
 
 
@@ -114,7 +113,7 @@ def _convert_to_datetimems_or_none(val: str) -> float | None:
 
     return None
 
-def clean_datetime__inplace(col: np.array) -> Tuple[np.array, int]:
+def clean_datetime__inplace(col: np.array) -> tuple[np.array, int]:
     _clean_continuous__inplace(col, _convert_to_datetimems_or_none)
 
 
@@ -124,7 +123,7 @@ def _convert_to_str_or_none(val: str) -> str | None:
     return None if (val in NULL_STRINGS or val is None) else val
 
 
-def clean_character__inplace(col: np.array) -> Tuple[np.array, int]:
+def clean_character__inplace(col: np.array) -> tuple[np.array, int]:
     are_nones, _, _ = _convert(col, _convert_to_str_or_none)
     col[are_nones] = np.repeat([""], are_nones.sum())
     return col, are_nones.sum()
@@ -132,7 +131,7 @@ def clean_character__inplace(col: np.array) -> Tuple[np.array, int]:
 
 ######################## RESPONSE TO OPEN QUESTION ########################
 
-def clean_response_to_open_ended__inplace(col: np.array) -> Tuple[np.array, int]:
+def clean_response_to_open_ended__inplace(col: np.array) -> tuple[np.array, int]:
     return clean_character__inplace(col)
 
 
@@ -142,7 +141,7 @@ def clean_data__inplace(
         mtx: np.array,
         ordered_col_metadata: list,
         num_exclude_threshold: int = 0,
-    ) -> Tuple[np.array, list[str]]:
+    ) -> tuple[np.array, list[str]]:
     trans = mtx.transpose()
     passed_threshold_state = []
     passed_threshold_col_names = []
