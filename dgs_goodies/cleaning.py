@@ -13,6 +13,9 @@ DATE_FORMATS = (
     '%d/%m/%Y',
 )
 NULL_STRINGS = {"nan", "NAN", "NaN", "null", "Null", "NULL"}
+ID_COLNAME = 'nomem_encr'
+OUTCOME_AVAILABLE_COLNAME = 'outcome_available'
+NEW_CHILD_COLNAME = 'new_child'
 
 
 ######################## COMMON ########################
@@ -72,7 +75,7 @@ def clean_categorical__inplace(col: np.array) -> tuple[np.array, int]:
 
     col[are_nones] = np.random.choice(uniques, p=percentages)
     col[not_nones] = not_none_values
-    return col, not_nones.sum()
+    return col, are_nones.sum()
 
 
 ######################## NUMERIC ########################
@@ -84,7 +87,7 @@ def _convert_float_or_null(val: str) -> float | None:
         return None
 
 def clean_numerical__inplace(col: np.array) -> tuple[np.array, int]:
-    _clean_continuous__inplace(col, _convert_float_or_null)
+    return _clean_continuous__inplace(col, _convert_float_or_null)
 
 
 ######################## DATE OR TIME ########################
@@ -114,7 +117,7 @@ def _convert_to_datetimems_or_none(val: str) -> float | None:
     return None
 
 def clean_datetime__inplace(col: np.array) -> tuple[np.array, int]:
-    _clean_continuous__inplace(col, _convert_to_datetimems_or_none)
+    return _clean_continuous__inplace(col, _convert_to_datetimems_or_none)
 
 
 ######################## CHARACTER ########################
@@ -148,20 +151,63 @@ def clean_data__inplace(
     for col, (col_name, col_type, cleaner) in zip(trans, ordered_col_metadata):
         try:
             _, num_nones = cleaner(col)
+
+            # do not want to prune this column
             passed = num_nones >= num_exclude_threshold
             passed_threshold_state.append(passed)
             if passed:
-                passed_threshold_state.append(col_name)
+                passed_threshold_col_names.append(col_name)
         except Exception as e:
             print(f"There was an error processing column '{col_name}' of type '{col_type}'")
             raise e
+
     passed_threshold = trans[passed_threshold_state]
-    return passed_threshold.transpose(), passed_threshold_state
+    cleaned = passed_threshold.transpose()
+    return cleaned, passed_threshold_col_names
 
 
 ######################## ENTRYPOINT ########################
 
-def generate_cleaned_mtx(codebook_filepath: str, training_data_filepath: str, cleaned_data_filepath: str) -> np.array:
+def generate_cleaned_mtx(
+        codebook_filepath: str,
+        training_data_filepath: str,
+        cleaned_data_filepath: str,
+        outcome_data_filepath: str,
+        pruned_outcomes_filepath: str,
+        num_exclude_threshold: int = 0,
+    ) -> None:
+
+
+    # PRUNER - prob should put in own function, too lazy atm
+
+    print(f"reading in raw outcome data from '{outcome_data_filepath}'")
+    outcome_data_df = pd.read_csv(outcome_data_filepath, header=0)
+    print("done")
+
+    assert len(outcome_data_df.columns.values) == 2, "outcome data must have exactly two columns"
+    # must be present, otherwise error surely should be thrown, which is the appropriate course of action
+    new_child_col_idx = next(
+        (i for i, col_name in enumerate(outcome_data_df.columns.values) if col_name == NEW_CHILD_COLNAME)
+    )
+    throw_away_idx = not new_child_col_idx
+    # only keep the column for the new child results
+    outcome_data_np = outcome_data_df.to_numpy()
+    print(outcome_data_np[:10])
+    print(np.shape(outcome_data_np))
+    print(outcome_data_np[:, new_child_col_idx])
+    # as there is only one column, at index 0 now
+    pruned_outcome_data_np = np.delete(
+        outcome_data_np[outcome_data_np[:, new_child_col_idx] > 0],
+        throw_away_idx
+    )
+    print(np.shape(pruned_outcome_data_np))
+    
+    pruned_outcome_data_df = pd.DataFrame(pruned_outcome_data_np, columns=[NEW_CHILD_COLNAME])
+
+    print(f"writing pruned outcome data to '{pruned_outcomes_filepath}'")
+    pruned_outcome_data_df.to_csv(pruned_outcomes_filepath, index=False)
+    print("done")
+
 
     # mapping each column to the cleaning function necessary for its type
     COLTYPE_TO_CLEANER = {
@@ -194,12 +240,34 @@ def generate_cleaned_mtx(codebook_filepath: str, training_data_filepath: str, cl
     training_data_np = training_data_df.to_numpy()
     del training_data_df
 
+
+
+    # must be present, otherwise error surely should be thrown, which is the appropriate course of action
+    outcome_available_column_idx = next(
+        (i for i, col_name in enumerate(ordered_cols) if col_name == OUTCOME_AVAILABLE_COLNAME)
+    )
+    converted = np.array([
+        _convert_int_or_null(val)
+        for val in training_data_np[:, outcome_available_column_idx]
+    ])
+    print(len(converted))
+    print(np.shape(converted))
+    print(converted[:10])
+    pruned_data = training_data_np[converted == 1]
+    print((converted == 1).sum())
+    raise Exception
+    # do not care about outcome variable
+    pruned_data = np.delete(pruned_data, outcome_available_column_idx, 1)
+    ordered_cols.pop(outcome_available_column_idx)
+
+
+
     ordered_col_metadata = [
         (col_name, colname_to_type[col_name], COLTYPE_TO_CLEANER[colname_to_type[col_name]])
         for col_name in ordered_cols
     ]
     print("cleaning data")
-    cleaned_data, col_names = clean_data__inplace(training_data_np, ordered_col_metadata)
+    cleaned_data, col_names = clean_data__inplace(training_data_np, ordered_col_metadata, num_exclude_threshold)
     print("done")
 
     trained_df = pd.DataFrame(cleaned_data, columns=col_names)
@@ -207,10 +275,14 @@ def generate_cleaned_mtx(codebook_filepath: str, training_data_filepath: str, cl
     print(f"writing cleaned data to '{cleaned_data_filepath}'")
     trained_df.to_csv(cleaned_data_filepath, index=False)
     print("done")
-    return cleaned_data
+
+    return None
+
+
+    
 
 
 if __name__ == "__main__":
     # ideally create a CLI for this, can't be bothered to atm
-    codebook_filepath, training_data_filepath, cleaned_data_filepath, threshold_str = sys.argv[1:]
-    generate_cleaned_mtx(codebook_filepath, training_data_filepath, cleaned_data_filepath, int(threshold_str))
+    codebook_filepath, training_data_filepath, cleaned_data_filepath, outcome_data_filepath, pruned_outcomes_filepath, threshold_str = sys.argv[1:]
+    generate_cleaned_mtx(codebook_filepath, training_data_filepath, cleaned_data_filepath, outcome_data_filepath, pruned_outcomes_filepath, int(threshold_str))

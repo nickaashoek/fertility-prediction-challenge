@@ -48,7 +48,7 @@ class NeuralNetwork(nn.Module):
         nodes_per_layer = [num_features] + [*nodes_per_layer]
         # must end with one layer which spits out the anser
         if nodes_per_layer[-1] != 1:
-            nodes_per_layer = [*nodes_per_layer] + [1]
+            nodes_per_layer.append(1)
 
         unflattened_args = [
             (
