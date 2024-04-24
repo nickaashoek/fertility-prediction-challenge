@@ -17,6 +17,7 @@ NULL_STRINGS = {"nan", "NAN", "NaN", "null", "Null", "NULL"}
 ID_COLNAME = 'nomem_encr'
 OUTCOME_AVAILABLE_COLNAME = 'outcome_available'
 NEW_CHILD_COLNAME = 'new_child'
+DROP_COLUMN = object()
 
 
 ######################## COMMON ########################
@@ -36,6 +37,17 @@ def _convert(col: np.array, convert_fn) -> np.array:
     return are_nones, not_nones, not_none_values
 
 
+def _normalize__inplace(col: np.array) -> np.array:
+    '''
+    Helper used to ensure that column values that are large do not dominate
+    '''
+    mu, sigma = col.mean(), col.std()
+    col[:] -= mu
+    if sigma:
+        col[:] /= sigma
+    return col
+
+
 def _clean_continuous__inplace(col: np.array, convert_fn) -> tuple[np.array, int]:
     '''
     Helper that takes in an np array (generally raw strings from the CSV) and
@@ -50,7 +62,7 @@ def _clean_continuous__inplace(col: np.array, convert_fn) -> tuple[np.array, int
         mu, sigma = not_none_values.mean(), not_none_values.std()
     col[are_nones] = np.random.normal(mu, sigma, size=are_nones.sum())
     col[not_nones] = not_none_values
-    return col, are_nones.sum()
+    return(_normalize__inplace(col)), are_nones.sum()
 
 
 ######################## CATEGORICAL ########################
@@ -121,19 +133,29 @@ def clean_datetime__inplace(col: np.array) -> tuple[np.array, int]:
     return _clean_continuous__inplace(col, _convert_to_datetimems_or_none)
 
 
-######################## CHARACTER ########################
+######################## CHARACTER (NO LONGER USED) ########################
 
 def _convert_to_str_or_none(val: str) -> str | None:
     return None if (val in NULL_STRINGS or val is None) else val
 
 
+def _convert_str_to_int(val: str) -> int:
+    return 0
+
+
 def clean_character__inplace(col: np.array) -> tuple[np.array, int]:
     are_nones, _, _ = _convert(col, _convert_to_str_or_none)
     col[are_nones] = np.repeat([""], are_nones.sum())
+    # convert to int
+    int_col = np.array([
+        _convert_str_to_int(val)
+        for val in col
+    ])
+    col[:] = int_col
     return col, are_nones.sum()
 
 
-######################## RESPONSE TO OPEN QUESTION ########################
+######################## RESPONSE TO OPEN QUESTION (NO LONGER USED) ########################
 
 def clean_response_to_open_ended__inplace(col: np.array) -> tuple[np.array, int]:
     return clean_character__inplace(col)
@@ -151,8 +173,11 @@ def clean_data__inplace(
     passed_threshold_col_names = []
     for col, (col_name, col_type, cleaner) in zip(trans, ordered_col_metadata):
         try:
-            _, num_nones = cleaner(col)
+            if cleaner is DROP_COLUMN:
+                passed_threshold_state.append(False)
+                continue
 
+            _, num_nones = cleaner(col)
             # do not want to prune this column
             passed = num_nones <= num_exclude_threshold
             passed_threshold_state.append(passed)
@@ -167,20 +192,12 @@ def clean_data__inplace(
     return cleaned, passed_threshold_col_names
 
 
-######################## ENTRYPOINT ########################
+######################## PRUNE OUTCOMES ########################
 
-def generate_cleaned_mtx(
-        codebook_filepath: str,
-        training_data_filepath: str,
-        cleaned_data_filepath: str,
-        outcome_data_filepath: str,
-        pruned_outcomes_filepath: str,
-        num_exclude_threshold: float = math.inf,
-    ) -> None:
-
-
-    # PRUNER - prob should put in own function, too lazy atm
-
+def prune_outcomes(
+    outcome_data_filepath: str,
+    pruned_outcomes_filepath: str,
+) -> int:
     print(f"reading in raw outcome data from '{outcome_data_filepath}'")
     outcome_data_df = pd.read_csv(outcome_data_filepath, header=0)
     print("done")
@@ -203,17 +220,34 @@ def generate_cleaned_mtx(
     print(f"writing pruned outcome data to '{pruned_outcomes_filepath}'")
     pruned_outcome_data_df.to_csv(pruned_outcomes_filepath, index=False)
     print("done")
+    return num_outcomes
 
 
+######################## ENTRYPOINT ########################
+
+def generate_cleaned_mtx(
+        codebook_filepath: str,
+        training_data_filepath: str,
+        cleaned_data_filepath: str,
+        outcome_data_filepath: str,
+        pruned_outcomes_filepath: str,
+        num_exclude_threshold: float = math.inf,
+    ) -> None:
+
+    #### PRUNING ####
+    num_outcomes = prune_outcomes(outcome_data_filepath, pruned_outcomes_filepath)
+
+
+    #### HANDLING CODEBOOK ####
     # mapping each column to the cleaning function necessary for its type
     COLTYPE_TO_CLEANER = {
-        'character [almost exclusively empty strings]': clean_character__inplace,
+        'character [almost exclusively empty strings]': DROP_COLUMN,
         'numeric': clean_numerical__inplace,
         'categorical': clean_categorical__inplace,
-        'response to open-ended question': clean_response_to_open_ended__inplace,
+        'response to open-ended question': DROP_COLUMN,
         'date or time': clean_datetime__inplace,   
     }
-
+    
     print(f"\nreading in codebook info from '{codebook_filepath}'")
     codebook_df = pd.read_csv(codebook_filepath, header=0)
     print("done")
@@ -225,6 +259,8 @@ def generate_cleaned_mtx(
     # we are going to be using a lot of memory, gonna clear useless stuff
     del codebook_df
 
+
+    #### PREP FOR TRAINING DATA CLEANING ####
     # pandas was giving me a ton of trouble trying to impute the types, and whatever NaN imputation
     # it did we clean immeidately anyway. Therefore just read everthing as string - not checking for NaN
     # as that is more performant and less of a headache
@@ -235,8 +271,6 @@ def generate_cleaned_mtx(
     ordered_cols = training_data_df.columns.values
     training_data_np = training_data_df.to_numpy()
     del training_data_df
-
-
 
     # must be present, otherwise error surely should be thrown, which is the appropriate course of action
     outcome_available_column_idx = next(
@@ -249,22 +283,24 @@ def generate_cleaned_mtx(
     pruned_data = training_data_np[converted == 1]
     assert num_outcomes == len(pruned_data), f"the number of rows for the outcome {num_outcomes} do not match the training data {len(pruned_data)} for which there is an outcome"
 
-    # do not care about outcome variable
+    # do not care about outcome variable being present while training
     pruned_data = np.delete(pruned_data, outcome_available_column_idx, 1)
     ordered_cols = np.delete(ordered_cols, outcome_available_column_idx)
 
+    # do not care about random ID variable being present while training
     id_column_idx = next(
         (i for i, col_name in enumerate(ordered_cols) if col_name == ID_COLNAME)
     )
     pruned_data = np.delete(pruned_data, id_column_idx, 1)
     ordered_cols = np.delete(ordered_cols, id_column_idx)
 
-
-
     ordered_col_metadata = [
         (col_name, colname_to_type[col_name], COLTYPE_TO_CLEANER[colname_to_type[col_name]])
         for col_name in ordered_cols
     ]
+
+
+    #### CLEAN AND SAVE ####
     print("cleaning data")
     cleaned_data, col_names = clean_data__inplace(pruned_data, ordered_col_metadata, num_exclude_threshold)
     print("done")
