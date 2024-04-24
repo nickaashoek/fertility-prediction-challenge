@@ -1,5 +1,6 @@
 from datetime import datetime
 from functools import reduce
+import math
 import numpy as np
 import pandas as pd
 import sys
@@ -143,7 +144,7 @@ def clean_response_to_open_ended__inplace(col: np.array) -> tuple[np.array, int]
 def clean_data__inplace(
         mtx: np.array,
         ordered_col_metadata: list,
-        num_exclude_threshold: int = 0,
+        num_exclude_threshold: float = math.inf,
     ) -> tuple[np.array, list[str]]:
     trans = mtx.transpose()
     passed_threshold_state = []
@@ -153,7 +154,7 @@ def clean_data__inplace(
             _, num_nones = cleaner(col)
 
             # do not want to prune this column
-            passed = num_nones >= num_exclude_threshold
+            passed = num_nones <= num_exclude_threshold
             passed_threshold_state.append(passed)
             if passed:
                 passed_threshold_col_names.append(col_name)
@@ -174,7 +175,7 @@ def generate_cleaned_mtx(
         cleaned_data_filepath: str,
         outcome_data_filepath: str,
         pruned_outcomes_filepath: str,
-        num_exclude_threshold: int = 0,
+        num_exclude_threshold: float = math.inf,
     ) -> None:
 
 
@@ -189,18 +190,13 @@ def generate_cleaned_mtx(
     new_child_col_idx = next(
         (i for i, col_name in enumerate(outcome_data_df.columns.values) if col_name == NEW_CHILD_COLNAME)
     )
-    throw_away_idx = not new_child_col_idx
+    throw_away_idx = (new_child_col_idx+1)%2
     # only keep the column for the new child results
     outcome_data_np = outcome_data_df.to_numpy()
-    print(outcome_data_np[:10])
-    print(np.shape(outcome_data_np))
-    print(outcome_data_np[:, new_child_col_idx])
+    pruned_outcome_data_np = outcome_data_np[np.logical_not(np.isnan(outcome_data_np[:, new_child_col_idx]))]
     # as there is only one column, at index 0 now
-    pruned_outcome_data_np = np.delete(
-        outcome_data_np[outcome_data_np[:, new_child_col_idx] > 0],
-        throw_away_idx
-    )
-    print(np.shape(pruned_outcome_data_np))
+    pruned_outcome_data_np = np.delete(pruned_outcome_data_np, throw_away_idx, 1)
+    num_outcomes = len(pruned_outcome_data_np)
     
     pruned_outcome_data_df = pd.DataFrame(pruned_outcome_data_np, columns=[NEW_CHILD_COLNAME])
 
@@ -250,15 +246,18 @@ def generate_cleaned_mtx(
         _convert_int_or_null(val)
         for val in training_data_np[:, outcome_available_column_idx]
     ])
-    print(len(converted))
-    print(np.shape(converted))
-    print(converted[:10])
     pruned_data = training_data_np[converted == 1]
-    print((converted == 1).sum())
-    raise Exception
+    assert num_outcomes == len(pruned_data), f"the number of rows for the outcome {num_outcomes} do not match the training data {len(pruned_data)} for which there is an outcome"
+
     # do not care about outcome variable
     pruned_data = np.delete(pruned_data, outcome_available_column_idx, 1)
-    ordered_cols.pop(outcome_available_column_idx)
+    ordered_cols = np.delete(ordered_cols, outcome_available_column_idx)
+
+    id_column_idx = next(
+        (i for i, col_name in enumerate(ordered_cols) if col_name == ID_COLNAME)
+    )
+    pruned_data = np.delete(pruned_data, id_column_idx, 1)
+    ordered_cols = np.delete(ordered_cols, id_column_idx)
 
 
 
@@ -267,7 +266,7 @@ def generate_cleaned_mtx(
         for col_name in ordered_cols
     ]
     print("cleaning data")
-    cleaned_data, col_names = clean_data__inplace(training_data_np, ordered_col_metadata, num_exclude_threshold)
+    cleaned_data, col_names = clean_data__inplace(pruned_data, ordered_col_metadata, num_exclude_threshold)
     print("done")
 
     trained_df = pd.DataFrame(cleaned_data, columns=col_names)
