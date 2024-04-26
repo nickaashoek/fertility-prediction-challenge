@@ -37,6 +37,7 @@ class ClassifierPreFerDataset(Dataset):
         # must be float32 to use apple GPU
         data_df = pd.read_csv(features_data_filepath, header=0, dtype=np.float32)
         outcome_df = pd.read_csv(outcome_data_filepath, header=0, dtype=np.float32)
+        print("Input frame has:", data_df.columns, "cols")
         # A useful sanity check
         for val in data_df['nomem_encr']:
             match = len(outcome_df[outcome_df['nomem_encr'] == val])
@@ -44,21 +45,18 @@ class ClassifierPreFerDataset(Dataset):
                 print(f"Could not find a match for {val}")
         
         joined_df = data_df.merge(outcome_df, on='nomem_encr')
+        # Drop the columns we don't need anymore
+        joined_df = joined_df.drop(columns=['nomem_encr'])
         self.data = torch.from_numpy(joined_df.to_numpy())
-        # -1 because the nomem_encr doesn't count as a feature
-        self.num_features = len(data_df.columns) - 1
-        
-        
-        self.features_data = torch.from_numpy(pd.read_csv(features_data_filepath, header=0, dtype=np.float32).to_numpy())
-        _, self.num_features = self.features_data.shape
+        # -1 because the outcome doesn't count as a feature
+        self.num_features = len(joined_df.columns) - 1
+        print("Num features:", self.num_features)
 
-        self.outcome_data = torch.from_numpy(pd.read_csv(outcome_data_filepath, header=0, dtype=np.float32).to_numpy())
-
-        assert len(self.features_data), "training data empty"
+        assert len(self.data), "training data empty"
         # Going to do explicit matching, so the below isn't necessary
         # assert len(self.features_data) == len(self.outcome_data), f"training data had {len(self.features_data)} rows which did not match outcome data which had {len(self.outcome_data)} rows"
 
-        uniques, counts = np.unique(self.outcome_data, return_counts=True)
+        uniques, counts = joined_df['new_child'].unique(), joined_df['new_child'].value_counts()
         self.num_labels = len(uniques)
         # below is used for trying to even out the fact that there are more 0s than anything else
         self.sampler = self._set_sampler(uniques, counts)
@@ -81,13 +79,13 @@ class ClassifierPreFerDataset(Dataset):
         self.sampler = torch.utils.data.WeightedRandomSampler(weights, len(weights))
 
     def __len__(self):
-        return len(self.features_data)
+        return len(self.data)
 
     def __getitem__(self, i: int) -> tuple[torch.Tensor, int]:
         # useful for debugging
         # val = int(random.random() < 0.75)
         #return torch.Tensor([np.float32(1)] * self.num_features), np.float32(val)
-        return self.features_data[i], self.outcome_data[i][0]
+        return self.data[i][:-1], int(self.data[i][-1])
 
 
 ######################## ClassifierNeuralNetwork ########################
@@ -137,6 +135,7 @@ class ClassifierNeuralNetwork(nn.Module):
         model.to(DEVICE)
         model.train()
         for i_batch, (features, outcomes) in enumerate(dataloader):
+            outcomes = outcomes.type(torch.LongTensor)
             optimizer.zero_grad()
             # OG tensor isntance still on CPU - only returned goes to GPU
             pred = model(features.to(DEVICE))
@@ -278,12 +277,8 @@ def get_classifer_entrypoint(
         outcomes_filepath: str,
         testing_features_filepath: str,
         testing_outcomes_filepath: str,
-        params_filepath: str,
+        params: dict,
     ) -> None:
-    params_file = open(params_filepath, "r")
-    params = yaml.safe_load(params_file)
-    print(params)
-    params_file.close()
     # exit(1)
     # just doing this for now - should do hyperparam tuning
     model, correct, test_loss = ClassifierNeuralNetwork.train_and_test_SGE(
@@ -307,18 +302,22 @@ def get_classifer_entrypoint(
 # should make this a CLI
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--cleaned", help="path to the cleaned data file") 
-    parser.add_argument("--outcomes", help="path to the outcomes file")
-    parser.add_argument("--testing_features", help="path to the testing features file")
-    parser.add_argument("--testing_outcomes", help="path to the testing outcomes file")
-    parser.add_argument("--params", help="path to the hyperparameters file")
+    parser.add_argument("--params", help="path to the parameters file")
     
     args = parser.parse_args()
+
+    params_file = open(args.params, "r")
+    params = yaml.safe_load(params_file)
+    params_file.close()
+
+    nn_params = params["hyperparams"]
+    files = params["inputs"]
+    print(files)
     
     best_model = get_classifer_entrypoint(
-        args.cleaned,
-        args.outcomes,
-        args.testing_features,
-        args.testing_outcomes,
-        args.params
+        files["cleaned"],
+        files["outcomes"],
+        files["test"],
+        files["test_outcomes"],
+        nn_params,
     ) 

@@ -144,7 +144,7 @@ def clean_data__inplace(
 
 ######################## ENTRYPOINT ########################
 
-def first_pass(training_data_df: pd.DataFrame, codebook_df: pd.DataFrame, outcome_df: pd.DataFrame, none_threshold: int) -> np.array:
+def first_pass(training_data_df: pd.DataFrame, codebook_df: pd.DataFrame) -> np.array:
 
     # mapping each column to the cleaning function necessary for its type
     COLTYPE_TO_CLEANER = {
@@ -160,22 +160,10 @@ def first_pass(training_data_df: pd.DataFrame, codebook_df: pd.DataFrame, outcom
         for _, r in codebook_df.iterrows()
     }
 
-    # Optionally, go through and remove the rows that don't have an outcome. This makes follow-up passes a lot easier
-    present_df = outcome_df[(outcome_df['new_child'] == 0) | (outcome_df['new_child'] == 1)]
-    present_ids = set(present_df['nomem_encr'])
-
-    print("Pruning - converting type")
-    training_data_df['nomem_encr'] = training_data_df['nomem_encr'].astype(int)
-    print("Pruning - filtering present outcomes")
-    pruned_df = training_data_df[training_data_df['nomem_encr'].isin(present_ids)].copy()
-
     # Get rid of metadata/extra data we don't need anymore
-    del training_data_df
-    del outcome_df
-    del present_df
 
     print("=== Before Cleaning ===")
-    print(pruned_df)
+    print(training_data_df)
 
     remove_cols = set()
 
@@ -185,27 +173,27 @@ def first_pass(training_data_df: pd.DataFrame, codebook_df: pd.DataFrame, outcom
         'date or time': str
     }
 
-    for col in tqdm(pruned_df.columns):
+    for col in tqdm(training_data_df.columns):
         col_type = colname_to_type[col]
         if col_type == "numeric":
             # Convert all numbers to floats because it doesn't seem possible to differentiate and we'll lose all the floats otherwise
-            pruned_df[col] = pruned_df[col].apply(lambda x: _convert_float_or_null(x))
+            training_data_df[col] = training_data_df[col].apply(lambda x: _convert_float_or_null(x))
         elif col_type == "date or time":
             # Convert all dates to seconds (floats)
-            pruned_df[col] = pruned_df[col].apply(lambda x: _convert_to_datetimems_or_none(x))
+            training_data_df[col] = training_data_df[col].apply(lambda x: _convert_to_datetimems_or_none(x))
         elif col_type == "categorical":
             # Convert all categories to ints (or nones)
-            pruned_df[col] = pruned_df[col].apply(lambda x: _convert_int_or_null(x))
+            training_data_df[col] = training_data_df[col].apply(lambda x: _convert_int_or_null(x))
         elif col_type not in desired_types:
             # Turns out that dropping is stupid slow. Just track and subselect later
             remove_cols.add(col)
 
 
     print("=== After Cleaning ===")
-    print(pruned_df)
-    keep_cols = set(pruned_df.columns) - remove_cols
+    print(training_data_df)
+    keep_cols = set(training_data_df.columns) - remove_cols
 
-    cleaned_df = pruned_df[list(keep_cols)].copy()
+    cleaned_df = training_data_df[list(keep_cols)].copy()
     print("=== After Removing Columns ===")
     # Fill all na values with nan b/c fuck it
     cleaned_df.fillna(value=np.nan, inplace=True)
@@ -213,8 +201,8 @@ def first_pass(training_data_df: pd.DataFrame, codebook_df: pd.DataFrame, outcom
 
     return cleaned_df
     
-def second_pass(df: pd.DataFrame) -> pd.DataFrame:
-    # Step 1: remove all the columns where there's a very high percentage of nan values.
+def second_pass(df: pd.DataFrame, outcome_df: pd.DataFrame) -> pd.DataFrame:
+    # Step 1: remove all the columns where there's a very high percentage of nan values so that the imputation is a bit faster.
     targets = 0
     target_cols = set(df.columns)
     # A threshold of 0.7 removes 21k columns, 0.8 17k, 0.9 12k, 1.0 3k
@@ -240,9 +228,19 @@ def second_pass(df: pd.DataFrame) -> pd.DataFrame:
     print("=== After Imputation ===")
     # This creates a np array. Turn it back into a dataframe
     print("Sanity check:", "nomem_encr" in set(useful_df.columns))
-    useful_df.set_index("nomem_encr", inplace=True)
     print(useful_df)
-    useful_df.to_csv("imputed.csv", header=True)
+    useful_df.to_csv("imputed-large.csv")
+    # After creating the imputed dataframe, remove the rows that don't have an outcome
+    
+    present_df = outcome_df[(outcome_df['new_child'] == 0) | (outcome_df['new_child'] == 1)]
+    present_ids = set(present_df['nomem_encr'])
+
+    print("Pruning - converting type")
+    useful_df['nomem_encr'] = useful_df['nomem_encr'].astype(int)
+    print("Pruning - filtering present outcomes")
+    pruned_df = useful_df[useful_df['nomem_encr'].isin(present_ids)].copy()
+    print(pruned_df)
+    pruned_df.to_csv("imputed.csv", header=True)
 
 
 def load_raw_df(path: str) -> pd.DataFrame:
@@ -268,7 +266,6 @@ if __name__ == "__main__":
     parser.add_argument("--training", help="path to the training data file", default="", required=False)
     parser.add_argument("--outcome", help="path to the outcome data file", default="", required=True)
     parser.add_argument("--cleaned", help="path to the cleaned data file", default="", required=False)
-    parser.add_argument("--threshold", type=int, help="threshold", default=0)
     
     args = parser.parse_args()
     cleaned_df = None
@@ -282,9 +279,10 @@ if __name__ == "__main__":
         raw_df = load_raw_df(args.training)
         if args.training.endswith(".csv"):
             raw_df.to_parquet('raw.parquet')
+            print("saved raw data to parquet")
         # Load the codebook
         print("Cleaning dataframe - first path")
-        cleaned_df = first_pass(raw_df, codebook_df, outcome_df, args.threshold)
+        cleaned_df = first_pass(raw_df, codebook_df)
         print("Finished first path cleaning")
         cleaned_df.to_parquet('cleaned.parquet')
         print("Saved cleaned version")
@@ -295,5 +293,5 @@ if __name__ == "__main__":
     # Do the imputation
     print("Part 2 - Imputation")
     print(cleaned_df)
-    second_pass(cleaned_df)
+    second_pass(cleaned_df, outcome_df)
     
