@@ -7,3 +7,4 @@ __pycache__/
 .tool-versions
 *.csv
 data/
+.env/
