@@ -5,3 +5,5 @@
 .LSOverride
 __pycache__/
 .tool-versions
+*.csv
+data/

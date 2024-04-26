@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from typing import Tuple
 from tqdm import tqdm
+import os
 from sklearn.impute import KNNImputer
 
 import argparse
@@ -71,10 +72,10 @@ def clean_numerical__inplace(col: np.array) -> Tuple[np.array, int]:
 
 ######################## DATE OR TIME ########################
 
-def _convert_to_datetimems_or_none(val: str) -> float | None:
+def _convert_to_datetimems_or_none(val: str):
     # dataset had whitespace... argh    
-    if val == None:
-        return None
+    if val == None or type(val) == float:
+        return np.nan
     val = val.strip()
 
     # is a time H:M:S,junk
@@ -95,7 +96,7 @@ def _convert_to_datetimems_or_none(val: str) -> float | None:
         except Exception:
             pass
 
-    return None
+    return np.nan
 
 def clean_datetime__inplace(col: np.array) -> Tuple[np.array, int]:
     return _clean_continuous__inplace(col, _convert_to_datetimems_or_none)
@@ -144,65 +145,59 @@ def clean_data__inplace(
 
 ######################## ENTRYPOINT ########################
 
-def first_pass(training_data_df: pd.DataFrame, codebook_df: pd.DataFrame) -> np.array:
+def first_pass(training_data_df: pd.DataFrame) -> np.array:
 
     # mapping each column to the cleaning function necessary for its type
-    COLTYPE_TO_CLEANER = {
-        'character [almost exclusively empty strings]': clean_character__inplace,
-        'numeric': clean_numerical__inplace,
-        'categorical': clean_categorical__inplace,
-        'response to open-ended question': clean_response_to_open_ended__inplace,
-        'date or time': clean_datetime__inplace,   
-    }
-
-    colname_to_type = {
-        r["var_name"]: r["type_var"]
-        for _, r in codebook_df.iterrows()
-    }
-
-    # Get rid of metadata/extra data we don't need anymore
 
     print("=== Before Cleaning ===")
     print(training_data_df)
 
     remove_cols = set()
-
-    desired_types = {
-        'numeric': float,
-        'categorical': str,
-        'date or time': str
-    }
-
+    dtypes = training_data_df.dtypes
     for col in tqdm(training_data_df.columns):
-        col_type = colname_to_type[col]
-        if col_type == "numeric":
-            # Convert all numbers to floats because it doesn't seem possible to differentiate and we'll lose all the floats otherwise
-            training_data_df[col] = training_data_df[col].apply(lambda x: _convert_float_or_null(x))
-        elif col_type == "date or time":
-            # Convert all dates to seconds (floats)
-            training_data_df[col] = training_data_df[col].apply(lambda x: _convert_to_datetimems_or_none(x))
-        elif col_type == "categorical":
-            # Convert all categories to ints (or nones)
-            training_data_df[col] = training_data_df[col].apply(lambda x: _convert_int_or_null(x))
-        elif col_type not in desired_types:
-            # Turns out that dropping is stupid slow. Just track and subselect later
-            remove_cols.add(col)
+        col_type = dtypes[col]
+        if col == "nomem_encr":
+            # Don't touch the Id column
+            continue
+        if pd.api.types.is_integer_dtype(col_type):
+            # Don't bother converting something that's already an integer => These are numerics
+            continue
+        elif pd.api.types.is_float_dtype(col_type):
+            # Don't bother converting floats beause they're already set => These are categories
+            continue
+        else:
+            # This could be a date for all we know, but actually parsing it is a massive pain in the ass
+            # Just guess and check later => whatever's left after cleaning will be a float
+            def try_datetime(val):
+                try:
+                    converted = _convert_to_datetimems_or_none(val)
+                    return converted
+                except:
+                    return np.nan
+            training_data_df[col] = training_data_df[col].apply(lambda x: try_datetime(x))
 
-
-    print("=== After Cleaning ===")
+    # Go through and remove columns that only have one value
+    training_data_df.fillna(value=np.nan, inplace=True)
+    print("=== After converting ===")
     print(training_data_df)
+    for col in tqdm(training_data_df.columns):
+        val_count = training_data_df[col].value_counts()
+        if len(val_count) == 0 or len(val_count) == 1:
+            # These are objectively worthless
+            remove_cols.add(col)
+    
+    print(f'Remove {len(remove_cols)} columns (single value)')
     keep_cols = set(training_data_df.columns) - remove_cols
-
     cleaned_df = training_data_df[list(keep_cols)].copy()
-    print("=== After Removing Columns ===")
-    # Fill all na values with nan b/c fuck it
-    cleaned_df.fillna(value=np.nan, inplace=True)
+    print("=== After Cleaning ===")
     print(cleaned_df)
+
 
     return cleaned_df
     
-def second_pass(df: pd.DataFrame, outcome_df: pd.DataFrame) -> pd.DataFrame:
+def second_pass(df: pd.DataFrame) -> pd.DataFrame:
     # Step 1: remove all the columns where there's a very high percentage of nan values so that the imputation is a bit faster.
+    print("=== Removing high nan rows ===")
     targets = 0
     target_cols = set(df.columns)
     # A threshold of 0.7 removes 21k columns, 0.8 17k, 0.9 12k, 1.0 3k
@@ -214,33 +209,37 @@ def second_pass(df: pd.DataFrame, outcome_df: pd.DataFrame) -> pd.DataFrame:
             targets += 1
             target_cols.remove(col)
 
-    print(f'Targets for removal: {targets}')
+    print(f'{targets} columsn to be removed via NA_Threshold')
     useful_df = df[list(target_cols)].copy()
 
     print("=== Before Imputation ===")
-    print(useful_df)
+
+    """
+    Get a useful dataframe that only has outcomes, perform imputation on that dataframe for speed reasons
+    Then, replace the rows in the original dataframe with the imputed values
+    """
+
+    to_impute = useful_df[useful_df['outcome_available'] == 1].copy()
+    print(to_impute)
 
     imputer = KNNImputer(n_neighbors=5)
     # This takes a long time and I don't think there's a good way to keep track of it
-
-    print("Sanity check:", "nomem_encr" in set(useful_df.columns))
-    useful_df[:] = imputer.fit_transform(useful_df)
-    print("=== After Imputation ===")
-    # This creates a np array. Turn it back into a dataframe
-    print("Sanity check:", "nomem_encr" in set(useful_df.columns))
-    print(useful_df)
-    useful_df.to_csv("imputed-large.csv")
-    # After creating the imputed dataframe, remove the rows that don't have an outcome
-    
-    present_df = outcome_df[(outcome_df['new_child'] == 0) | (outcome_df['new_child'] == 1)]
-    present_ids = set(present_df['nomem_encr'])
-
-    print("Pruning - converting type")
-    useful_df['nomem_encr'] = useful_df['nomem_encr'].astype(int)
-    print("Pruning - filtering present outcomes")
-    pruned_df = useful_df[useful_df['nomem_encr'].isin(present_ids)].copy()
-    print(pruned_df)
-    pruned_df.to_csv("imputed.csv", header=True)
+    print("=== Imputing on to_impute ===")
+    if not os.path.exists("imputed_base.csv"):
+        to_impute[:] = imputer.fit_transform(to_impute)
+        to_impute.to_csv("imputed_base.csv")
+    else:
+        to_impute = pd.read_csv("imputed_base.csv", low_memory=False)
+    print("=== Finished Imputing ===")
+    print(to_impute)
+    # Merge the imputed rows back into the original dataframe
+    print("=== Starting Merge ===")
+    print(to_impute["outcome_available"].value_counts())
+    cols = list(set(to_impute.columns) - set(["nomem_encr", "outcome_available"]))
+    useful_df.loc[useful_df["nomem_encr"].isin(to_impute["nomem_encr"]), cols] = to_impute[cols]
+    print(useful_df["outcome_available"].value_counts())
+    print("=== Merge finished ===")
+    return useful_df
 
 
 def load_raw_df(path: str) -> pd.DataFrame:
@@ -262,36 +261,19 @@ def load_dataframe(path: str, low_memory=False) -> pd.DataFrame:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--codebook", help="path to the codebook file")
     parser.add_argument("--training", help="path to the training data file", default="", required=False)
-    parser.add_argument("--outcome", help="path to the outcome data file", default="", required=True)
     parser.add_argument("--cleaned", help="path to the cleaned data file", default="", required=False)
-    
-    args = parser.parse_args()
-    cleaned_df = None
-    
-    print("Loading codebook")
-    codebook_df = load_dataframe(args.codebook)
-    outcome_df = pd.read_csv(args.outcome, header=0, na_filter=True, na_values=NULL_STRINGS)
-    if args.cleaned == "":
-        # Load the raw data
-        print("Loading raw data")
-        raw_df = load_raw_df(args.training)
-        if args.training.endswith(".csv"):
-            raw_df.to_parquet('raw.parquet')
-            print("saved raw data to parquet")
-        # Load the codebook
-        print("Cleaning dataframe - first path")
-        cleaned_df = first_pass(raw_df, codebook_df)
-        print("Finished first path cleaning")
-        cleaned_df.to_parquet('cleaned.parquet')
-        print("Saved cleaned version")
-    else:
-        print("Loading cleaned dataframe")
-        cleaned_df = load_dataframe(args.cleaned)
 
-    # Do the imputation
-    print("Part 2 - Imputation")
-    print(cleaned_df)
-    second_pass(cleaned_df, outcome_df)
-    
+    args = parser.parse_args()
+
+    print("=== Loading dataframe ===")
+    cleaned_v1 = None
+    if args.training:
+        training_data_df = pd.read_csv(args.training, low_memory=False)
+        print("=== Loaded dataframe ===")
+        cleaned_v1 = first_pass(training_data_df)
+        cleaned_v1.to_csv("cleaned_v1.csv")
+    else:
+        cleaned_v1 = pd.read_csv("cleaned_v1.csv", low_memory=False)
+    imputed = second_pass(cleaned_v1)
+    imputed.to_csv("imputed.csv")
