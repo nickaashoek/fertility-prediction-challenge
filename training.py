@@ -39,7 +39,6 @@ USE_SAMPLER = False
 
 class ClassifierPreFerDataset(Dataset):
     def __init__(self, data_df: pd.DataFrame, outcome_df: pd.DataFrame):
-        # must be float32 to use apple GPU
         print("=== Setting up dataset ===")
         # First, drop all the columns that don't have an outcome because they don't help with training
         data_df = data_df[data_df['outcome_available'] == 1.0]
@@ -49,6 +48,8 @@ class ClassifierPreFerDataset(Dataset):
         joined_df = data_df.merge(outcome_df, on='nomem_encr')
         # Drop the columns we don't need anymore
         joined_df = joined_df.drop(columns=['nomem_encr'])
+        for col in joined_df.columns:
+            joined_df[col] = joined_df[col].apply(lambda x: np.float32(x))
         self.data = torch.from_numpy(joined_df.to_numpy())
         # -1 because the outcome doesn't count as a feature
         self.num_features = len(joined_df.columns) - 1
