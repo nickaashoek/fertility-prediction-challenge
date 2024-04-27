@@ -42,18 +42,24 @@ class ClassifierPreFerDataset(Dataset):
         print("=== Setting up dataset ===")
         # First, drop all the columns that don't have an outcome because they don't help with training
         data_df = data_df[data_df['outcome_available'] == 1.0]
-        print(data_df)
 
         print("Input frame has:", len(data_df.columns), "cols")
         joined_df = data_df.merge(outcome_df, on='nomem_encr')
-        # Drop the columns we don't need anymore
-        joined_df = joined_df.drop(columns=['nomem_encr'])
+        # Drop the columns we don't need anymore, leaving only the features and the outcome
+        joined_df.drop(columns=['nomem_encr'], inplace=True)
+        joined_df.drop(columns=['outcome_available'], inplace=True)
         for col in joined_df.columns:
             joined_df[col] = joined_df[col].apply(lambda x: np.float32(x))
+        print(joined_df)
+        print("=== Remove all NaNs ===")
+        joined_df.fillna(0, inplace=True)
+        print(joined_df)
+        print("=== Outcomes ===")
+        print(joined_df['new_child'].value_counts())
         self.data = torch.from_numpy(joined_df.to_numpy())
         # -1 because the outcome doesn't count as a feature
         self.num_features = len(joined_df.columns) - 1
-        print("Num features:", self.num_features)
+        print("Num features:", self.num_features, len(joined_df.columns))
 
         assert len(self.data), "training data empty"
         # Going to do explicit matching, so the below isn't necessary
@@ -206,6 +212,20 @@ class ClassifierNeuralNetwork(nn.Module):
             loss_fn=loss_fn,
             epochs=epochs,
         )
+    def predict(
+        cls,
+        predict_df: pd.DataFrame,
+    ) -> tuple[float, float]:
+        print("=== Making Predictions ===")
+        print(predict_df)
+        predictions = []
+        with torch.no_grad():
+            for _, row in predict_df.iterrows():
+                feature = row.to_numpy()
+                feature_tensor = torch.from_numpy(feature)
+                pred = cls(feature_tensor.to(DEVICE))
+                predictions.append(0)
+        return predictions
     
 def train_save_model(cleaned_df, outcome_df):
     """

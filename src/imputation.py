@@ -178,39 +178,28 @@ def first_pass(training_data_df: pd.DataFrame) -> np.array:
 
     # Go through and remove columns that only have one value
     training_data_df.fillna(value=np.nan, inplace=True)
-    print("=== After converting ===")
-    print(training_data_df)
-    for col in tqdm(training_data_df.columns):
-        val_count = training_data_df[col].value_counts()
-        if len(val_count) == 0 or len(val_count) == 1:
-            # These are objectively worthless
-            remove_cols.add(col)
-    
-    print(f'Remove {len(remove_cols)} columns (single value)')
-    keep_cols = set(training_data_df.columns) - remove_cols
-    cleaned_df = training_data_df[list(keep_cols)].copy()
     print("=== After Cleaning ===")
-    print(cleaned_df)
+    print(training_data_df)
 
-
-    return cleaned_df
+    return training_data_df
     
 def second_pass(df: pd.DataFrame) -> pd.DataFrame:
     # Step 1: remove all the columns where there's a very high percentage of nan values so that the imputation is a bit faster.
-    print("=== Removing high nan rows ===")
-    targets = 0
-    target_cols = set(df.columns)
-    # A threshold of 0.7 removes 21k columns, 0.8 17k, 0.9 12k, 1.0 3k
-    NA_THRESHOLD = 0.8
-    for col in df.columns:
-        na_count = df[col].isna().sum()
-        na_pct = na_count/len(df[col])
-        if na_pct >= NA_THRESHOLD:
-            targets += 1
-            target_cols.remove(col)
+    # print("=== Removing high nan rows ===")
+    # targets = 0
+    # target_cols = set(df.columns)
+    # # A threshold of 0.7 removes 21k columns, 0.8 17k, 0.9 12k, 1.0 3k
+    # NA_THRESHOLD = 0.8
+    # for col in df.columns:
+    #     na_count = df[col].isna().sum()
+    #     na_pct = na_count/len(df[col])
+    #     if na_pct >= NA_THRESHOLD:
+    #         targets += 1
+    #         target_cols.remove(col)
 
-    print(f'{targets} columsn to be removed via NA_Threshold')
-    useful_df = df[list(target_cols)].copy()
+    # print(f'{targets} columns to be removed via NA_Threshold')
+    # useful_df = df[list(target_cols)].copy()
+    useful_df = df.copy()
 
     print("=== Before Imputation ===")
 
@@ -220,25 +209,47 @@ def second_pass(df: pd.DataFrame) -> pd.DataFrame:
     """
 
     to_impute = useful_df[useful_df['outcome_available'] == 1].copy()
-    print(to_impute)
+    """
+    Remove columns that are all None from the imputation. They don't matter, and don't help
+    We also skip columns that have such a high none threshold under the assumption that they're not useful (provide no learning)
+    """
+    target_cols = set(to_impute.columns)
+    NA_THRESHOLD = 0.8
+    for col in to_impute.columns:
+        na_count = to_impute[col].isna().sum()
+        na_pct = na_count/len(to_impute[col])
+        if na_pct >= NA_THRESHOLD:
+            target_cols.remove(col)
 
-    imputer = KNNImputer(n_neighbors=5)
-    # This takes a long time and I don't think there's a good way to keep track of it
-    print("=== Imputing on to_impute ===")
-    if not os.path.exists("imputed_base.csv"):
-        to_impute[:] = imputer.fit_transform(to_impute)
-        to_impute.to_csv("imputed_base.csv")
-    else:
-        to_impute = pd.read_csv("imputed_base.csv", low_memory=False)
-    print("=== Finished Imputing ===")
+    to_impute = to_impute[list(target_cols)]
     print(to_impute)
+    
+    if os.path.exists("imputed_base.csv"):
+        to_impute = pd.read_csv("imputed_base.csv", index_col=0)
+        print("loaded to impute")
+        print(to_impute)
+    else:
+
+        imputer = KNNImputer(n_neighbors=5, keep_empty_features=True)
+    # This takes a long time and I don't think there's a good way to keep track of it
+        print("=== Imputing on to_impute ===")
+        to_impute[:] = imputer.fit_transform(to_impute)
+        print("=== Finished Imputing ===")
+        print(to_impute)
+        to_impute.to_csv("imputed_base.csv")
     # Merge the imputed rows back into the original dataframe
     print("=== Starting Merge ===")
-    print(to_impute["outcome_available"].value_counts())
     cols = list(set(to_impute.columns) - set(["nomem_encr", "outcome_available"]))
     useful_df.loc[useful_df["nomem_encr"].isin(to_impute["nomem_encr"]), cols] = to_impute[cols]
+    drop_cols = list() 
+    for col in useful_df.columns:
+        if "unnamed" in col.lower():
+            print("Unnamed col in useful_df after merge")
+            drop_cols.append(col)
+    useful_df.drop(columns=drop_cols, inplace=True)
     print(useful_df["outcome_available"].value_counts())
     print("=== Merge finished ===")
+    print(useful_df)
     return useful_df
 
 
@@ -270,10 +281,13 @@ if __name__ == "__main__":
     cleaned_v1 = None
     if args.training:
         training_data_df = pd.read_csv(args.training, low_memory=False)
+        print(training_data_df)
         print("=== Loaded dataframe ===")
         cleaned_v1 = first_pass(training_data_df)
         cleaned_v1.to_csv("cleaned_v1.csv")
     else:
-        cleaned_v1 = pd.read_csv("cleaned_v1.csv", low_memory=False)
+        cleaned_v1 = pd.read_csv("cleaned_v1.csv", low_memory=False, index_col=0)
+        print("=== Loaded cleaned_v1 ===")
+        print(cleaned_v1)
     imputed = second_pass(cleaned_v1)
     imputed.to_csv("imputed.csv")

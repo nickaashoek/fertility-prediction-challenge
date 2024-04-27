@@ -23,6 +23,11 @@ import joblib
 import datetime
 from functools import reduce
 import numpy as np
+import argparse
+import torch
+
+import training
+from training import ClassifierNeuralNetwork
 
 DATE_FORMATS = (
     '%d.%m.%Y',
@@ -90,56 +95,66 @@ def first_pass(training_data_df: pd.DataFrame) -> np.array:
     # Go through and remove columns that only have one value
     training_data_df.fillna(value=np.nan, inplace=True)
     print("=== After converting ===")
-    for col in training_data_df.columns:
-        val_count = training_data_df[col].value_counts()
-        if len(val_count) == 0 or len(val_count) == 1:
-            # These are objectively worthless
-            remove_cols.add(col)
+    """
+    Previously we were removing all columns that were none in the data. This is dangerous
+    The training and test sets may have different all none columns, so we just have to preserve them unfortunately
+    """
+    print(training_data_df)
+    return training_data_df
     
-    print(f'Remove {len(remove_cols)} columns (single value)')
-    keep_cols = set(training_data_df.columns) - remove_cols
-    cleaned_df = training_data_df[list(keep_cols)].copy()
-    print("=== After Cleaning ===")
-
-
-    return cleaned_df
     
 def second_pass(df: pd.DataFrame) -> pd.DataFrame:
     # Step 1: remove all the columns where there's a very high percentage of nan values so that the imputation is a bit faster.
-    print("=== Removing high nan rows ===")
-    targets = 0
-    target_cols = set(df.columns)
-    # A threshold of 0.7 removes 21k columns, 0.8 17k, 0.9 12k, 1.0 3k
-    NA_THRESHOLD = 0.8
-    for col in df.columns:
-        na_count = df[col].isna().sum()
-        na_pct = na_count/len(df[col])
-        if na_pct >= NA_THRESHOLD:
-            targets += 1
-            target_cols.remove(col)
+    # print("=== Removing high nan rows ===")
+    # targets = 0
+    # target_cols = set(df.columns)
+    # # A threshold of 0.7 removes 21k columns, 0.8 17k, 0.9 12k, 1.0 3k
+    # NA_THRESHOLD = 0.8
+    # for col in df.columns:
+    #     na_count = df[col].isna().sum()
+    #     na_pct = na_count/len(df[col])
+    #     if na_pct >= NA_THRESHOLD:
+    #         targets += 1
+    #         target_cols.remove(col)
 
-    print(f'{targets} columsn to be removed via NA_Threshold')
-    useful_df = df[list(target_cols)].copy()
-
+    # print(f'{targets} columsn to be removed via NA_Threshold')
+    # useful_df = df[list(target_cols)].copy()
+    useful_df = df.copy()
     print("=== Before Imputation ===")
 
     """
     Get a useful dataframe that only has outcomes, perform imputation on that dataframe for speed reasons
     Then, replace the rows in the original dataframe with the imputed values
+    If case on the column being present because we shouldn't do imputation on the test data? Or should we?
+
+    There are few enough rows that we can afford to use a nearest neighbors imputer, which tends to be more accurate
     """
 
-    to_impute = useful_df[useful_df['outcome_available'] == 1].copy()
+    if ("outcome_available" in useful_df.columns):
+        to_impute = useful_df[useful_df['outcome_available'] == 1].copy()
+        """
+        Remove columns that are all None from the imputation. They don't matter, and don't help
+        We also skip columns that have such a high none threshold under the assumption that they're not useful (provide no learning)
+        """
+        target_cols = set(to_impute.columns)
+        NA_THRESHOLD = 0.8
+        for col in to_impute.columns:
+            na_count = to_impute[col].isna().sum()
+            na_pct = na_count/len(to_impute[col])
+            if na_pct >= NA_THRESHOLD:
+                target_cols.remove(col)
+        to_impute = to_impute[list(target_cols)]
+        imputer = KNNImputer(n_neighbors=5, keep_empty_features=True)
+        # This takes a long time and I don't think there's a good way to keep track of it
+        print("=== Imputing on to_impute ===")
+        to_impute[:] = imputer.fit_transform(to_impute)
+        print("=== Finished Imputing ===")
+        # Merge the imputed rows back into the original dataframe
+        print("=== Starting Merge ===")
+        cols = list(set(to_impute.columns) - set(["nomem_encr", "outcome_available"]))
+        useful_df.loc[useful_df["nomem_encr"].isin(to_impute["nomem_encr"]), cols] = to_impute[cols]
+        print("=== Merge finished ===")
 
-    imputer = KNNImputer(n_neighbors=5)
-    # This takes a long time and I don't think there's a good way to keep track of it
-    print("=== Imputing on to_impute ===")
-    to_impute[:] = imputer.fit_transform(to_impute)
-    print("=== Finished Imputing ===")
-    # Merge the imputed rows back into the original dataframe
-    print("=== Starting Merge ===")
-    cols = list(set(to_impute.columns) - set(["nomem_encr", "outcome_available"]))
-    useful_df.loc[useful_df["nomem_encr"].isin(to_impute["nomem_encr"]), cols] = to_impute[cols]
-    print("=== Merge finished ===")
     return useful_df
 
 
@@ -163,7 +178,7 @@ def clean_df(df, background_df=None):
     return imputed_df
 
 
-def predict_outcomes(df, background_df=None, model_path="model.joblib"):
+def predict_outcomes(df, background_df=None, model_path="model.pt"):
     """Generate predictions using the saved model and the input dataframe.
 
     The predict_outcomes function accepts a Pandas DataFrame as an argument
@@ -189,13 +204,27 @@ def predict_outcomes(df, background_df=None, model_path="model.joblib"):
         print("The identifier variable 'nomem_encr' should be in the dataset")
 
     # Load the model
-    model = joblib.load(model_path)
+    model = ClassifierNeuralNetwork(9816, training.DEFAULT_NODES_PER_LAYER, 2)
+    model = torch.load(model_path)
+    model.eval()
+    model.to(training.DEVICE)
 
     # Preprocess the fake / holdout data
+    print("=== Before Cleaning ===")
+    print(df)
     df = clean_df(df, background_df)
+    print("=== After Cleaning ===")
+    df.fillna(value=0, inplace=True)
+    print(df)
 
     # Exclude the variable nomem_encr if this variable is NOT in your model
+    
+    for col in df.columns:
+        df[col] = df[col].apply(lambda x: np.float32(x))
+
+    # Remove the identifier and outcome_available columns
     vars_without_id = df.columns[df.columns != 'nomem_encr']
+    vars_without_id = vars_without_id[vars_without_id != 'outcome_available']
 
     # Generate predictions from model, should be 0 (no child) or 1 (had child)
     predictions = model.predict(df[vars_without_id])
@@ -207,3 +236,19 @@ def predict_outcomes(df, background_df=None, model_path="model.joblib"):
 
     # Return only dataset with predictions and identifier
     return df_predict
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--do_predict", help="whether to do prediction", default=False, required=False, action='store_true')
+    parser.add_argument("--do_train", help="whether to do training", default="", required=False, action='store_true')
+    parser.add_argument("--predict", help="path to prediction data file", required=False, type=str)
+    
+    args = parser.parse_args()
+
+    if args.do_train:
+        pass
+    if args.do_predict:
+        print("=== Trying to make predictions ===")
+        predictions = predict_outcomes(pd.read_csv(args.predict, low_memory=False))
+        print("=== Done making predictions ===")
+        print(predictions)
