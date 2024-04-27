@@ -30,6 +30,13 @@ DEFAULT_NODES_PER_LAYER = (100, 50, 25, 10)
 USE_SAMPLER = False
 
 ######################## TrainingDataset ########################
+def normalize_col(col, df: pd.DataFrame):
+    col_max, col_min = df[col].max(), df[col].min()
+    if col_max == col_min:
+        # If all the values are the same, set to 0
+        df[col] = df[col].apply(lambda x: 0)
+    else:
+        df[col] =  df[col].apply(lambda x: (x-col_min)/(col_max-col_min))
 
 class ClassifierPreFerDataset(Dataset):
     def __init__(self, data_df: pd.DataFrame, outcome_df: pd.DataFrame):
@@ -42,15 +49,13 @@ class ClassifierPreFerDataset(Dataset):
         # Drop the columns we don't need anymore, leaving only the features and the outcome
         joined_df.drop(columns=['nomem_encr'], inplace=True)
         joined_df.drop(columns=['outcome_available'], inplace=True)
-        for col in joined_df.columns:
-            joined_df[col] = joined_df[col].apply(lambda x: np.float32(x))
         print(joined_df)
         print("=== Remove all NaNs ===")
         joined_df.fillna(0, inplace=True)
+        for col in joined_df.columns:
+            normalize_col(col, joined_df)
         print(joined_df)
-        print("=== Outcomes ===")
-        print(joined_df['new_child'].value_counts())
-        self.data = torch.from_numpy(joined_df.to_numpy())
+        self.data = torch.from_numpy(joined_df.to_numpy()).type(torch.float32)
         # -1 because the outcome doesn't count as a feature
         self.num_features = len(joined_df.columns) - 1
         print("Num features:", self.num_features, len(joined_df.columns))
@@ -144,6 +149,8 @@ class ClassifierNeuralNetwork(nn.Module):
             # OG tensor isntance still on CPU - only returned goes to GPU
             pred = model(features.to(DEVICE))
             loss = loss_fn(pred, outcomes.to(DEVICE))
+            if i_batch < 10:
+                print(loss)
 
             # backpropogate
             loss.backward()
@@ -178,6 +185,8 @@ class ClassifierNeuralNetwork(nn.Module):
             cls.train_loop(model, dataloader, optimizer, loss_fn or nn.CrossEntropyLoss())
             scheduler.step()
 
+        cls.test_model(model, dataloader, nn.CrossEntropyLoss())
+
         return model
     
     @classmethod
@@ -206,6 +215,45 @@ class ClassifierNeuralNetwork(nn.Module):
             loss_fn=loss_fn,
             epochs=epochs,
         )
+
+    @staticmethod
+    def test_model(
+        model: ClassifierNeuralNetwork,
+        dataloader: DataLoader,
+        loss_fn = None
+    ) -> tuple[float, float]:
+        
+        if not loss_fn:
+            loss_fn = nn.CrossEntropyLoss()
+        
+        # likely do not need, but just in case - this moves the same model instance to the GPU
+        model.to(DEVICE)
+        # Set the model to evaluation mode - important for batch normalization and dropout layers
+        # Unnecessary in this situation but added for best practices
+        model.eval()
+        num_batches = len(dataloader)
+        size = len(dataloader.dataset)
+        correct, test_loss = 0, 0
+
+        # Evaluating the model with torch.no_grad() ensures that no gradients are computed during test mode
+        # also serves to reduce unnecessary gradient computations and memory usage for tensors with requires_grad=True
+        with torch.no_grad():
+            for i, (features, outcome) in enumerate(dataloader):
+                # OG tensor isntance still on CPU - only returned goes to GPU
+                pred = model(features.to(DEVICE))
+                dev_outcome = outcome.to(DEVICE)
+                # print(pred.argmax(1))
+                # print(dev_outcome)
+                # print('\n\n')
+                if i % 100 == 0:
+                    print(pred)
+                correct += (pred.argmax(1) == dev_outcome).type(torch.float).sum().item()
+                test_loss += loss_fn(pred, dev_outcome).item()
+
+        correct /= size
+        test_loss /= num_batches
+        print(f"Correct Ratio: {correct} Avg loss: {test_loss:>8f} \n")
+        return correct, test_loss
 
     def predict(
         self,

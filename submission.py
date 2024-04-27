@@ -175,6 +175,9 @@ def clean_df(df, background_df=None):
     # Create new variable with age
     cleaned_df = first_pass(df)
     imputed_df = second_pass(cleaned_df)
+    imputed_df.fillna(value=0, inplace=True)
+    for col in imputed_df:
+        training.normalize_col(col, imputed_df)
     return imputed_df
 
 
@@ -214,7 +217,6 @@ def predict_outcomes(df, background_df=None, model_path="model.pt"):
     print(df)
     df = clean_df(df, background_df)
     print("=== After Cleaning ===")
-    df.fillna(value=0, inplace=True)
     print(df)
 
     # Exclude the variable nomem_encr if this variable is NOT in your model
