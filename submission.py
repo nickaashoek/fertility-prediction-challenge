@@ -66,7 +66,6 @@ def first_pass(training_data_df: pd.DataFrame) -> np.array:
     # mapping each column to the cleaning function necessary for its type
 
     print("=== Before Cleaning ===")
-    print(training_data_df)
 
     remove_cols = set()
     dtypes = training_data_df.dtypes
@@ -99,7 +98,6 @@ def first_pass(training_data_df: pd.DataFrame) -> np.array:
     Previously we were removing all columns that were none in the data. This is dangerous
     The training and test sets may have different all none columns, so we just have to preserve them unfortunately
     """
-    print(training_data_df)
     return training_data_df
     
     
@@ -181,7 +179,7 @@ def clean_df(df, background_df=None):
     return imputed_df
 
 
-def predict_outcomes(df, background_df=None, model_path="model.pt"):
+def predict_outcomes(df, background_df=None, model_path="model.joblib"):
     """Generate predictions using the saved model and the input dataframe.
 
     The predict_outcomes function accepts a Pandas DataFrame as an argument
@@ -214,10 +212,8 @@ def predict_outcomes(df, background_df=None, model_path="model.pt"):
 
     # Preprocess the fake / holdout data
     print("=== Before Cleaning ===")
-    print(df)
     df = clean_df(df, background_df)
     print("=== After Cleaning ===")
-    print(df)
 
     # Exclude the variable nomem_encr if this variable is NOT in your model
     
