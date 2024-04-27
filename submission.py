@@ -204,8 +204,8 @@ def predict_outcomes(df, background_df=None, model_path="model.pt"):
         print("The identifier variable 'nomem_encr' should be in the dataset")
 
     # Load the model
-    model = ClassifierNeuralNetwork(9816, training.DEFAULT_NODES_PER_LAYER, 2)
-    model = torch.load(model_path)
+    model = ClassifierNeuralNetwork(len(df.columns)-2, training.DEFAULT_NODES_PER_LAYER, 2)
+    model.load_state_dict(torch.load(model_path))
     model.eval()
     model.to(training.DEVICE)
 

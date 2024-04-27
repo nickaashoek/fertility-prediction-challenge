@@ -18,20 +18,14 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
 ######################## GLOBALS ########################
-DEVICE = (
-    "cuda"
-    if torch.cuda.is_available()
-    else "mps"
-    if torch.backends.mps.is_available()
-    else "cpu"
-)
+DEVICE = "cpu"
 DEFAULT_SGE_KWARGS = {
-    "lr": 0.001,
+    "lr": 0.0001,
     "momentum": 0.9,
-    "nesterov": True,
+    "nesterov": False,
 }
-DEFAULT_BATCH_SIZE = 25
-DEFAULT_EPOCHS = 100
+DEFAULT_BATCH_SIZE = 20
+DEFAULT_EPOCHS = 10
 DEFAULT_NODES_PER_LAYER = (100, 50, 25, 10)
 USE_SAMPLER = False
 
@@ -212,8 +206,9 @@ class ClassifierNeuralNetwork(nn.Module):
             loss_fn=loss_fn,
             epochs=epochs,
         )
+
     def predict(
-        cls,
+        self,
         predict_df: pd.DataFrame,
     ) -> tuple[float, float]:
         print("=== Making Predictions ===")
@@ -223,7 +218,8 @@ class ClassifierNeuralNetwork(nn.Module):
             for _, row in predict_df.iterrows():
                 feature = row.to_numpy()
                 feature_tensor = torch.from_numpy(feature)
-                pred = cls(feature_tensor.to(DEVICE))
+                pred = self(feature_tensor.to(DEVICE))
+                print(pred)
                 predictions.append(0)
         return predictions
     
@@ -245,7 +241,7 @@ def train_save_model(cleaned_df, outcome_df):
         **DEFAULT_SGE_KWARGS,
     )
     print("=== Done training model ===")
-    torch.save(model, "model.pt")
+    torch.save(model.state_dict(), "model.pt")
     print("=== Model Saved ===")
 
 if __name__ == "__main__":
